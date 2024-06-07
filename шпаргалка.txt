@@ -1,0 +1,46 @@
+#функция для чанков с оверлапом
+def split_docs_to_chunks(documents: dict, file_types: List[str], chunk_size=450, chunk_overlap=100):
+    all_chunks = []
+    if 'txt' in file_types and documents['txt'] is not None:
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        txt_chunks = [text_splitter.split_documents([doc]) for doc in documents['txt']]
+        txt_chunks = [item for sublist in txt_chunks for item in sublist]
+        all_chunks.extend(txt_chunks)
+
+    if 'json' in file_types and documents['json'] is not None:
+        json_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        json_chunks = json_splitter.create_documents([json.dumps(doc, ensure_ascii=False) for doc in documents['json']],
+                                                     metadatas=documents['json_metadata'])
+        all_chunks.extend(json_chunks)
+
+    if 'docx' in file_types and documents['docx'] is not None:
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        txt_chunks = [text_splitter.split_documents([doc]) for doc in documents['docx']]
+        txt_chunks = [item for sublist in txt_chunks for item in sublist]
+        all_chunks.extend(txt_chunks)
+
+    return all_chunks
+
+
+
+#первая версия загрузки в хрома
+def get_chroma_vectorstore(documents, embeddings, persist_directory):
+    if os.path.isdir(persist_directory) and os.listdir(persist_directory):
+        print("Loading existing Chroma vectorstore...")
+        vectorstore = Chroma(
+            #collection_name=current_user,
+            embedding_function=embeddings, persist_directory=persist_directory)
+
+        uniq_sources_to_add = set([doc.metadata['source'].split('\\')[-1] for doc in chunks_res])
+        if len(uniq_sources_to_add) > 0:
+            vectorstore.add_documents(documents=chunks_res, embedding=embeddings)
+            tmp = [add_filename_to_metadata('local', filename) for filename in uniq_sources_to_add]
+        else:
+            print('Новых документов не было, пропускаем шаг добавления')
+
+    else:
+        print("Creating and indexing new Chroma vectorstore...")
+        vectorstore = Chroma.from_documents(documents=documents,
+                                            #collection_name=current_user,
+                                            embedding=embeddings, persist_directory=persist_directory)
+    return vectorstore

@@ -89,6 +89,7 @@ def write_to_file(data, output_file):
                     f.write(f"{key}: {value}\n")
             f.write("\n")
 
+
 # Основная часть скрипта
 if __name__ == "__main__":
     # URL общего доступа к файлу на Яндекс.Диске
@@ -118,3 +119,5 @@ if __name__ == "__main__":
     write_to_file(data, output_file)
 
     print(f"Данные успешно записаны в файл {output_file}")
+
+

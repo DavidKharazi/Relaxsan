@@ -17,14 +17,14 @@ import json
 from typing import List, Tuple
 
 
-os.environ['OPENAI_API_KEY'] = 'my_api_key'
-BASE_URL = "my_base_url"
+os.environ['OPENAI_API_KEY'] = 'my-api-key'
 
-model_name = "gpt-4-turbo"
+
+model_name = "gpt-3.5-turbo"
 temperature = 0
-llm = ChatOpenAI(base_url=BASE_URL, model=model_name, temperature=temperature)
+llm = ChatOpenAI(model=model_name, temperature=temperature)
 
-embeddings = OpenAIEmbeddings(base_url=BASE_URL)
+embeddings = OpenAIEmbeddings()
 
 current_user = 'RELAXSAN'
 
@@ -239,27 +239,42 @@ DATA_BUCKET = 'utlik'
 DOCS = load_documents('local', DATA_BUCKET, ['txt', 'json', 'docx'])
 
 
-def split_docs_to_chunks(documents: dict, file_types: List[str], chunk_size=450, chunk_overlap=100):
+import re
+
+def split_docs_to_chunks(documents: dict, file_types: List[str], keyword="Идентификатор"):
     all_chunks = []
+
+    def split_by_keyword(text, keyword):
+        # Разделяем текст по ключевому слову и сохраняем ключевое слово в начале каждого чанка
+        parts = re.split(f"({keyword})", text)
+        chunks = [parts[i] + parts[i + 1] for i in range(1, len(parts) - 1, 2)]
+        if parts[0]:
+            chunks.insert(0, parts[0])
+        if len(parts) % 2 == 0:
+            chunks.append(parts[-1])
+        return chunks
+
     if 'txt' in file_types and documents['txt'] is not None:
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        txt_chunks = [text_splitter.split_documents([doc]) for doc in documents['txt']]
-        txt_chunks = [item for sublist in txt_chunks for item in sublist]
-        all_chunks.extend(txt_chunks)
+        for doc in documents['txt']:
+            chunks = split_by_keyword(doc.page_content, keyword)
+            for chunk in chunks:
+                all_chunks.append(Document(source=doc.source, page_content=chunk, metadata=doc.metadata))
 
     if 'json' in file_types and documents['json'] is not None:
-        json_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        json_chunks = json_splitter.create_documents([json.dumps(doc, ensure_ascii=False) for doc in documents['json']],
-                                                     metadatas=documents['json_metadata'])
-        all_chunks.extend(json_chunks)
+        for idx, doc in enumerate(documents['json']):
+            text = json.dumps(doc, ensure_ascii=False)
+            chunks = split_by_keyword(text, keyword)
+            for chunk in chunks:
+                all_chunks.append(Document(source=documents['json_metadata'][idx]['source'], page_content=chunk))
 
     if 'docx' in file_types and documents['docx'] is not None:
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        txt_chunks = [text_splitter.split_documents([doc]) for doc in documents['docx']]
-        txt_chunks = [item for sublist in txt_chunks for item in sublist]
-        all_chunks.extend(txt_chunks)
+        for doc in documents['docx']:
+            chunks = split_by_keyword(doc.page_content, keyword)
+            for chunk in chunks:
+                all_chunks.append(Document(source=doc.source, page_content=chunk, metadata=doc.metadata))
 
     return all_chunks
+
 
 chunks_res = split_docs_to_chunks(DOCS, ['txt', 'json', 'docx'])
 
@@ -268,28 +283,40 @@ def get_chroma_vectorstore(documents, embeddings, persist_directory):
     if os.path.isdir(persist_directory) and os.listdir(persist_directory):
         print("Loading existing Chroma vectorstore...")
         vectorstore = Chroma(
-            #collection_name=current_user,
-            embedding_function=embeddings, persist_directory=persist_directory)
+            embedding_function=embeddings, persist_directory=persist_directory
+        )
 
-        uniq_sources_to_add = set([doc.metadata['source'].split('\\')[-1] for doc in chunks_res])
-        if len(uniq_sources_to_add) > 0:
-            vectorstore.add_documents(documents=chunks_res, embedding=embeddings)
-            tmp = [add_filename_to_metadata('local', filename) for filename in uniq_sources_to_add]
+        existing_files = get_uploaded_filenames('local')
+        uniq_sources_to_add = set(
+            doc.metadata['source'] for doc in chunks_res
+            if doc.metadata['source'] not in existing_files
+        )
+
+        if uniq_sources_to_add:
+            vectorstore.add_documents(
+                documents=[doc for doc in chunks_res if doc.metadata['source'] in uniq_sources_to_add],
+                embedding=embeddings
+            )
+            for filename in uniq_sources_to_add:
+                add_filename_to_metadata('local', filename)
         else:
             print('Новых документов не было, пропускаем шаг добавления')
 
     else:
         print("Creating and indexing new Chroma vectorstore...")
-        vectorstore = Chroma.from_documents(documents=documents,
-                                            #collection_name=current_user,
-                                            embedding=embeddings, persist_directory=persist_directory)
+        vectorstore = Chroma.from_documents(
+            documents=documents,
+            embedding=embeddings, persist_directory=persist_directory
+        )
+        uniq_sources_to_add = set(doc.metadata['source'] for doc in documents)
+        for filename in uniq_sources_to_add:
+            add_filename_to_metadata('local', filename)
+
     return vectorstore
 
 
 vectorstore = get_chroma_vectorstore(documents=chunks_res, embeddings=embeddings, persist_directory=CHROMA_PATH)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 2}, search_type='similarity')
-
-
 
 
 def format_docs(docs):
@@ -307,6 +334,8 @@ prompt_new = ChatPromptTemplate.from_messages(
             You can also use information from chat_history if necessary.
             If you don't know the answer, just say that you don't know. Use three sentences maximum and keep the answer concise.
             The context which you should use: {context}
+            Provide information on product availability
+            Answer essentially what is being asked, without unnecessary information
             ''',
         ),
         MessagesPlaceholder(variable_name="chat_history"),
